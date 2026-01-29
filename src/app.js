@@ -13,7 +13,7 @@ import BackgroundGeometry from "./backgroundGeometry";
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { rgbShift } from 'three/examples/jsm/tsl/display/RGBShiftNode.js';
 import { film } from 'three/examples/jsm/tsl/display/FilmNode.js';
-import { dof } from 'three/examples/jsm/tsl/display/DepthOfFieldNode.js';
+import { dot } from 'three/tsl';
 import PointRenderer from "./mls-mpm/pointRenderer.js";
 
 const loadHdr = async (file) => {
@@ -117,17 +117,13 @@ class App {
         const bloomIntensityPass = scenePass.getTextureNode( 'bloomIntensity' );
         const bloomPass = bloom( outputPass.mul( bloomIntensityPass ) );
 
-        // === Depth of Field Setup ===
-        // Get view-space Z for depth-based blur
-        // Focus: distance from camera, Aperture: blur strength, MaxBlur: blur limit
-        const viewZPass = scenePass.getViewZNode('depth');
-        this.dofEnabled = uniform(1);           // 1 = enabled, 0 = disabled
-        this.dofFocus = uniform(1.2);           // Focus distance (camera at -1, particles at ~0.2)
-        this.dofAperture = uniform(0.008);      // Aperture size (smaller = subtle blur)
-        this.dofMaxBlur = uniform(0.008);       // Maximum blur amount (keep subtle)
+        // === Vignette Setup ===
+        // Darkens edges for cinematic focus on center
+        // Intensity 0.3 = subtle, 0.6+ = dramatic
+        this.vignetteIntensity = uniform(0.3);
 
-        // Chromatic aberration amount
-        this.chromaticAberrationAmount = uniform(0.003);
+        // Chromatic aberration amount (kept low to avoid RGB separation)
+        this.chromaticAberrationAmount = uniform(0.0008);
 
         // Apply chromatic aberration to the output
         const rgbShiftPass = rgbShift(outputPass, this.chromaticAberrationAmount);
@@ -140,22 +136,25 @@ class App {
         const postProcessing = new THREE.PostProcessing(this.renderer);
         postProcessing.outputColorTransform = false;
 
-        // Store references for update loop
-        this.viewZPass = viewZPass;
-
         // === Post-Processing Chain ===
-        // Order: Scene -> Bloom blend -> Film Grain
-        // Note: DOF removed - was causing RGB channel separation artifacts
+        // Order: Scene -> Bloom blend -> Film Grain -> Vignette
         postProcessing.outputNode = Fn(() => {
-            // Use output directly (skip chromatic aberration for now)
+            // Scene color with bloom
             const a = outputPass.rgb.clamp(0,1).toVar();
             const b = bloomPass.rgb.clamp(0,1).mul(bloomIntensityPass.r.sign().oneMinus()).toVar();
             // Soft light blend for bloom
             const blended = vec3(1).sub(b).sub(b).mul(a).mul(a).add(b.mul(a).mul(2)).clamp(0,1);
 
-            // Apply film grain as final pass
-            const grainPass = film(vec4(blended, 1.0), this.filmGrainIntensity);
-            return grainPass;
+            // Apply film grain
+            const withGrain = film(vec4(blended, 1.0), this.filmGrainIntensity);
+
+            // === Vignette Effect ===
+            // Darken edges based on distance from screen center
+            const uv2 = uv().sub(0.5).mul(2.0);           // UV from -1 to 1
+            const dist = dot(uv2, uv2);                    // Squared distance from center
+            const vig = float(1.0).sub(dist.mul(this.vignetteIntensity));  // Darken by distance
+
+            return vec4(withGrain.rgb.mul(vig.clamp(0, 1)), 1.0);
         })().renderOutput();
 
         this.postProcessing = postProcessing;
@@ -205,12 +204,7 @@ class App {
         this.bloomPassRef.threshold.value = conf.bloomThreshold;
         this.chromaticAberrationAmount.value = conf.chromaticAberration;
         this.filmGrainIntensity.value = conf.filmGrainIntensity;
-
-        // === Depth of Field Parameters ===
-        this.dofEnabled.value = conf.dofEnabled ? 1 : 0;
-        this.dofFocus.value = conf.dofFocus;
-        this.dofAperture.value = conf.dofAperture;
-        this.dofMaxBlur.value = conf.dofMaxBlur;
+        this.vignetteIntensity.value = conf.vignetteIntensity;
 
         this.controls.update(delta);
         this.lights.update(elapsed);

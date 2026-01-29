@@ -11,13 +11,13 @@ class Conf {
     bloom = true;
 
     run = true;
-    noise = 0.6; // Gentler turbulence
-    speed = 0.8; // Slightly slower for physical feel
+    noise = 0.4;
+    speed = 1.5;
     stiffness = 3.;
     restDensity = 1.;
-    density = 1;
+    density = 2;
     dynamicViscosity = 0.1;
-    gravity = 0;
+    gravity = 1;  // 0=back, 1=down, 2=center, 3=device
     gravitySensorReading = new THREE.Vector3();
     accelerometerReading = new THREE.Vector3();
     actualSize = 1;
@@ -49,13 +49,9 @@ class Conf {
     // Creates volumetric 3D depth feeling
     depthBrightness = 0.5;     // 0 = no effect, 1.0 = strong depth falloff
 
-    // === Depth of Field ===
-    // Blurs particles based on distance from focus point
-    // Creates cinematic depth separation
-    dofEnabled = true;
-    dofFocus = 1.2;            // Focus distance from camera (camera at -1, particles at ~0.2)
-    dofAperture = 0.008;       // Aperture size - smaller = less blur, subtle effect
-    dofMaxBlur = 0.008;        // Maximum blur amount - keep subtle
+    // === Vignette ===
+    // Darkens edges of screen for cinematic focus
+    vignetteIntensity = 0.3;   // 0 = off, 0.3 = subtle, 0.6+ = dramatic
 
     constructor(info) {
         if (mobile()) {
@@ -144,13 +140,7 @@ class Conf {
         visuals.addBinding(this, "sizeVariation", { min: 0, max: 0.5, step: 0.05, label: "size variation" });
         visuals.addBinding(this, "opacityVariation", { min: 0, max: 0.4, step: 0.05, label: "opacity variation" });
         visuals.addBinding(this, "depthBrightness", { min: 0, max: 1.0, step: 0.05, label: "depth brightness" });
-
-        // === Depth of Field Controls ===
-        const dofFolder = visuals.addFolder({ title: "depth of field", expanded: false });
-        dofFolder.addBinding(this, "dofEnabled", { label: "enabled" });
-        dofFolder.addBinding(this, "dofFocus", { min: 0.1, max: 2.0, step: 0.05, label: "focus distance" });
-        dofFolder.addBinding(this, "dofAperture", { min: 0.001, max: 0.1, step: 0.005, label: "aperture" });
-        dofFolder.addBinding(this, "dofMaxBlur", { min: 0.001, max: 0.05, step: 0.002, label: "max blur" });
+        visuals.addBinding(this, "vignetteIntensity", { min: 0, max: 1.0, step: 0.05, label: "vignette" });
         //settings.addBinding(this, "points");
 
         const simulation = settings.addFolder({
@@ -169,7 +159,7 @@ class Conf {
                 {text: 'center', value: 2},
                 {text: 'device gravity', value: 3},
             ],
-            value: 0,
+            value: 1,
         }).on('change', (ev) => {
             if (ev.value === 3) {
                 this.setupGravitySensor();
