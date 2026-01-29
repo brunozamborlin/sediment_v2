@@ -3,23 +3,31 @@ import * as THREE from "three/webgpu";
 export class Lights {
     constructor() {
         this.object = new THREE.Object3D();
-        const light = new THREE.SpotLight(0xffffff, 5, 15, Math.PI * 0.18, 1, 0);
-        const lightTarget = new THREE.Object3D();
-        light.position.set(0., 1.2, -0.8);
-        lightTarget.position.set(0,0.7,0);
-        light.target = lightTarget;
 
-        this.object.add(light);
-        this.object.add(lightTarget);
-        //this.object.add(new THREE.SpotLightHelper(light));
+        // Key light - warm, positioned for rim lighting effect
+        const keyLight = new THREE.SpotLight(0xffe8e0, 3, 10, Math.PI * 0.3, 0.8, 0);
+        const keyTarget = new THREE.Object3D();
+        keyLight.position.set(1.0, 1.5, -1.0);
+        keyTarget.position.set(0, 0.5, 0.2);
+        keyLight.target = keyTarget;
+        keyLight.castShadow = false; // No harsh shadows
 
-        light.castShadow = true; // default false
-        light.shadow.mapSize.width = 512*2; // default
-        light.shadow.mapSize.height = 512*2; // default
-        light.shadow.bias = -0.005;
-        light.shadow.camera.near = 0.5; // default
-        light.shadow.camera.far = 5;
+        // Fill light - cool, from opposite side
+        const fillLight = new THREE.SpotLight(0xe0e8ff, 1.5, 10, Math.PI * 0.4, 0.9, 0);
+        const fillTarget = new THREE.Object3D();
+        fillLight.position.set(-1.0, 0.8, -0.5);
+        fillTarget.position.set(0, 0.5, 0.2);
+        fillLight.target = fillTarget;
 
+        // Rim/back light for depth
+        const rimLight = new THREE.PointLight(0xff6060, 2, 5);
+        rimLight.position.set(0, 0.5, 1.5);
+
+        this.object.add(keyLight);
+        this.object.add(keyTarget);
+        this.object.add(fillLight);
+        this.object.add(fillTarget);
+        this.object.add(rimLight);
     }
 
     update(elapsed) {

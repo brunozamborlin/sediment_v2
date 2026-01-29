@@ -104,25 +104,25 @@ class ParticleRenderer {
         this.geometry =  new THREE.InstancedBufferGeometry().copy(cone);
         console.log(this.geometry);*/
 
-        //const sphereGeometry = BufferGeometryUtils.mergeVertices(new THREE.IcosahedronGeometry(0.5, 1));
-        const boxGeometry = BufferGeometryUtils.mergeVertices(new THREE.BoxGeometry(7, 7,30), 3.0);
-        boxGeometry.attributes.position.array = boxGeometry.attributes.position.array.map(v => v*0.1);
-        const roundedBoxGeometry = createRoundedBox(0.7,0.7,3,0.1); //BufferGeometryUtils.mergeVertices(new RoundedBoxGeometry(0.7,0.7,3,1,0.1));
+        // Use small spheres for micro-bead aesthetic
+        const sphereGeometry = BufferGeometryUtils.mergeVertices(new THREE.IcosahedronGeometry(0.5, 1));
+        const boxGeometry = BufferGeometryUtils.mergeVertices(new THREE.BoxGeometry(1, 1, 1), 0.5);
+        boxGeometry.attributes.position.array = boxGeometry.attributes.position.array.map(v => v*0.5);
 
-        this.defaultIndexCount = roundedBoxGeometry.index.count;
+        this.defaultIndexCount = sphereGeometry.index.count;
         this.shadowIndexCount = boxGeometry.index.count;
 
-        const mergedGeometry = BufferGeometryUtils.mergeGeometries([roundedBoxGeometry, boxGeometry]);
+        const mergedGeometry = BufferGeometryUtils.mergeGeometries([sphereGeometry, boxGeometry]);
 
         this.geometry = new THREE.InstancedBufferGeometry().copy(mergedGeometry);
 
         this.geometry.setDrawRange(0, this.defaultIndexCount);
         this.geometry.instanceCount = this.mlsMpmSim.numParticles;
 
+        // Soft, matte material for volumetric look
         this.material = new THREE.MeshStandardNodeMaterial({
-            metalness: 0.900,
-            roughness: 0.50,
-            //iridescence: 1.0,
+            metalness: 0.1,
+            roughness: 0.8,
         });
 
         this.uniforms.size = uniform(1);
@@ -133,17 +133,45 @@ class ParticleRenderer {
         this.material.positionNode = Fn(() => {
             const particlePosition = particle.get("position");
             const particleDensity = particle.get("density");
-            const particleDirection = particle.get("direction");
 
-            //return attribute("position").xyz.mul(10).add(vec3(32,32,0));
-            //return attribute("position").xyz.mul(0.1).add(positionAttribute.mul(vec3(1,1,0.4)));
-            const mat = calcLookAtMatrix(particleDirection.xyz);
-            vNormal.assign(transformNormalToView(mat.mul(normalLocal)));
+            // Simple spherical particles (no velocity elongation)
+            vNormal.assign(transformNormalToView(normalLocal));
+
+            // Depth-based AO for atmosphere
             vAo.assign(particlePosition.z.div(64));
-            vAo.assign(vAo.mul(vAo).oneMinus());
-            return mat.mul(attribute("position").xyz.mul(this.uniforms.size)).mul(particleDensity.mul(0.4).add(0.5).clamp(0,1)).add(particlePosition.mul(vec3(1,1,0.4)));
+            vAo.assign(vAo.mul(vAo).oneMinus().mul(0.7).add(0.3));
+
+            // Uniform size with slight density variation
+            const sizeScale = particleDensity.mul(0.2).add(0.8).clamp(0.6, 1.2);
+            return attribute("position").xyz.mul(this.uniforms.size).mul(sizeScale).add(particlePosition.mul(vec3(1,1,0.4)));
         })();
-        this.material.colorNode = particle.get("color");
+
+        // Custom color: muted reds/pinks + white/gray palette
+        this.material.colorNode = Fn(() => {
+            const particleVelocity = particle.get("velocity");
+            const particleDensity = particle.get("density");
+            const particleMass = particle.get("mass");
+
+            // Use mass as a stable per-particle random seed
+            const seed = particleMass.fract().mul(10.0);
+
+            // Base color: mix between deep red and soft pink/white
+            const speed = particleVelocity.length();
+            const t = seed.add(particleDensity.mul(0.3)).fract();
+
+            // Muted red/pink palette
+            const deepRed = vec3(0.45, 0.08, 0.12);
+            const softPink = vec3(0.65, 0.25, 0.35);
+            const warmWhite = vec3(0.85, 0.82, 0.80);
+            const coolGray = vec3(0.5, 0.48, 0.52);
+
+            // Blend based on particle properties
+            const color1 = mix(deepRed, softPink, t);
+            const color2 = mix(coolGray, warmWhite, t.mul(0.5).add(0.5));
+            const finalColor = mix(color1, color2, speed.mul(0.3).clamp(0, 0.6));
+
+            return finalColor;
+        })();
         this.material.aoNode = vAo;
 
         //this.material.fragmentNode = vec4(0,0,0,1);

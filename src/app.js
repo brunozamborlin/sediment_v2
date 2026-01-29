@@ -4,13 +4,14 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import {Lights} from "./lights";
 import hdri from "./assets/autumn_field_puresky_1k.hdr";
 
-import { float, Fn, mrt, output, pass, vec3, vec4 } from "three/tsl";
+import { float, Fn, mrt, output, pass, vec3, vec4, uv, uniform } from "three/tsl";
 import {conf} from "./conf";
 import {Info} from "./info";
 import MlsMpmSimulator from "./mls-mpm/mlsMpmSimulator";
 import ParticleRenderer from "./mls-mpm/particleRenderer";
 import BackgroundGeometry from "./backgroundGeometry";
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
+import { rgbShift } from 'three/examples/jsm/tsl/display/RGBShiftNode.js';
 import PointRenderer from "./mls-mpm/pointRenderer.js";
 
 const loadHdr = async (file) => {
@@ -50,29 +51,34 @@ class App {
         this.scene = new THREE.Scene();
 
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-        this.controls.target.set(0,0.5,0.2);
+        this.controls.target.set(0, 0.5, 0.2);
         this.controls.enableDamping = true;
-        this.controls.enablePan = false;
+        this.controls.dampingFactor = 0.05;
+        this.controls.enablePan = true;
         this.controls.touches = {
             TWO: THREE.TOUCH.DOLLY_ROTATE,
         }
-        this.controls.maxDistance = 2.0;
-        this.controls.minPolarAngle = 0.2 * Math.PI;
-        this.controls.maxPolarAngle = 0.8 * Math.PI;
-        this.controls.minAzimuthAngle = 0.7 * Math.PI;
-        this.controls.maxAzimuthAngle = 1.3 * Math.PI;
+        this.controls.minDistance = 0.3;
+        this.controls.maxDistance = 3.0;
+        // Allow full orbit for dark background
+        this.controls.minPolarAngle = 0.1 * Math.PI;
+        this.controls.maxPolarAngle = 0.9 * Math.PI;
 
         await progressCallback(0.1)
 
         const hdriTexture = await loadHdr(hdri);
 
-        this.scene.background = hdriTexture; //bgNode.mul(2);
-        this.scene.backgroundRotation = new THREE.Euler(0,2.15,0);
+        // Dark background for volumetric particle aesthetic
+        this.scene.background = new THREE.Color(0x000000);
         this.scene.environment = hdriTexture;
         this.scene.environmentRotation = new THREE.Euler(0,-2.15,0);
-        this.scene.environmentIntensity = 0.5;
-        //this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = 0.66;
+        this.scene.environmentIntensity = 0.15; // Dim environment lighting
+
+        // Add fog for depth
+        this.scene.fog = new THREE.Fog(0x000000, 0.3, 1.8);
+
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = 1.0;
 
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -86,12 +92,18 @@ class App {
         this.pointRenderer = new PointRenderer(this.mlsMpmSim);
         this.scene.add(this.pointRenderer.object);
 
+        // Simplified lighting for dark aesthetic
         this.lights = new Lights();
         this.scene.add(this.lights.object);
 
-        const backgroundGeometry = new BackgroundGeometry();
-        await backgroundGeometry.init();
-        this.scene.add(backgroundGeometry.object);
+        // Add soft ambient light
+        const ambientLight = new THREE.AmbientLight(0x404050, 0.5);
+        this.scene.add(ambientLight);
+
+        // Background geometry disabled for dark volumetric aesthetic
+        // const backgroundGeometry = new BackgroundGeometry();
+        // await backgroundGeometry.init();
+        // this.scene.add(backgroundGeometry.object);
 
 
         const scenePass = pass(this.scene, this.camera);
@@ -102,25 +114,29 @@ class App {
         const outputPass = scenePass.getTextureNode();
         const bloomIntensityPass = scenePass.getTextureNode( 'bloomIntensity' );
         const bloomPass = bloom( outputPass.mul( bloomIntensityPass ) );
+
+        // Chromatic aberration amount
+        this.chromaticAberrationAmount = uniform(0.003);
+
+        // Apply chromatic aberration to the output
+        const rgbShiftPass = rgbShift(outputPass, this.chromaticAberrationAmount);
+
         const postProcessing = new THREE.PostProcessing(this.renderer);
         postProcessing.outputColorTransform = false;
-        //postProcessing.outputNode = vec4(outputPass.rgb, 1).add( vec4(bloomPass.mul(bloomIntensityPass.sign().oneMinus()).rgb, 0.0) ).renderOutput();
-        //postProcessing.outputNode = outputPass.renderOutput();
-        //(1-2b)*a*a + 2ba
+
+        // Combine bloom + chromatic aberration
         postProcessing.outputNode = Fn(() => {
-            const a = outputPass.rgb.clamp(0,1).toVar();
+            const a = rgbShiftPass.rgb.clamp(0,1).toVar();
             const b = bloomPass.rgb.clamp(0,1).mul(bloomIntensityPass.r.sign().oneMinus()).toVar();
-            //return vec4(vec3(1).sub(b).sub(b).mul(a).mul(a).mul(0.0),1.0);
-            //return b;
-            //return a.div(b.oneMinus().max(0.0001)).clamp(0,1);
+            // Soft light blend
             return vec4(vec3(1).sub(b).sub(b).mul(a).mul(a).add(b.mul(a).mul(2)).clamp(0,1),1.0);
         })().renderOutput();
 
         this.postProcessing = postProcessing;
         this.bloomPass = bloomPass;
-        this.bloomPass.threshold.value = 0.001;
-        this.bloomPass.strength.value = 0.94;
-        this.bloomPass.radius.value = 0.8;
+        this.bloomPass.threshold.value = 0.1;   // Lower threshold for more glow
+        this.bloomPass.strength.value = 0.5;    // Soft bloom
+        this.bloomPass.radius.value = 1.2;      // Wider spread
 
 
         this.raycaster = new THREE.Raycaster();
@@ -153,6 +169,14 @@ class App {
 
         this.particleRenderer.object.visible = !conf.points;
         this.pointRenderer.object.visible = conf.points;
+
+        // Update visual parameters from GUI
+        this.scene.fog.near = conf.fogNear;
+        this.scene.fog.far = conf.fogFar;
+        this.renderer.toneMappingExposure = conf.exposure;
+        this.bloomPass.strength.value = conf.bloomStrength;
+        this.bloomPass.threshold.value = conf.bloomThreshold;
+        this.chromaticAberrationAmount.value = conf.chromaticAberration;
 
         this.controls.update(delta);
         this.lights.update(elapsed);

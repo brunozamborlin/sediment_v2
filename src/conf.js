@@ -6,13 +6,13 @@ import * as THREE from "three/webgpu";
 class Conf {
     gui = null;
     maxParticles = 8192 * 16;
-    particles = 8192 * 4;
+    particles = 8192 * 8; // More particles for dense cloud
 
     bloom = true;
 
     run = true;
-    noise = 1.0;
-    speed = 1;
+    noise = 0.6; // Gentler turbulence
+    speed = 0.8; // Slightly slower for physical feel
     stiffness = 3.;
     restDensity = 1.;
     density = 1;
@@ -21,9 +21,17 @@ class Conf {
     gravitySensorReading = new THREE.Vector3();
     accelerometerReading = new THREE.Vector3();
     actualSize = 1;
-    size = 1;
+    size = 0.6; // Smaller particles
 
     points = false;
+
+    // Visual parameters
+    chromaticAberration = 0.003;
+    fogNear = 0.3;
+    fogFar = 1.8;
+    bloomStrength = 0.5;
+    bloomThreshold = 0.1;
+    exposure = 1.0;
 
     constructor(info) {
         if (mobile()) {
@@ -65,13 +73,49 @@ class Conf {
             rows: 2,
         });
 
+        // Presets
+        const presetOptions = {
+            options: {
+                'Select preset...': '',
+                'Calm': 'Calm',
+                'Storm': 'Storm',
+                'Dense Cloud': 'Dense Cloud',
+                'Light Mist': 'Light Mist'
+            },
+            value: ''
+        };
+        gui.addBlade({
+            view: 'list',
+            label: 'presets',
+            options: [
+                {text: 'Calm', value: 'Calm'},
+                {text: 'Storm', value: 'Storm'},
+                {text: 'Dense Cloud', value: 'Dense Cloud'},
+                {text: 'Light Mist', value: 'Light Mist'},
+            ],
+            value: 'Calm',
+        }).on('change', (ev) => {
+            this.applyPreset(ev.value);
+        });
+
         const settings = gui.addFolder({
             title: "settings",
             expanded: false,
         });
         settings.addBinding(this, "particles", { min: 4096, max: this.maxParticles, step: 4096 }).on('change', () => { this.updateParams(); });
-        settings.addBinding(this, "size", { min: 0.5, max: 2, step: 0.1 }).on('change', () => { this.updateParams(); });
+        settings.addBinding(this, "size", { min: 0.3, max: 2, step: 0.05 }).on('change', () => { this.updateParams(); });
         settings.addBinding(this, "bloom");
+
+        const visuals = settings.addFolder({
+            title: "visuals",
+            expanded: false,
+        });
+        visuals.addBinding(this, "exposure", { min: 0.3, max: 2, step: 0.05 });
+        visuals.addBinding(this, "bloomStrength", { min: 0, max: 1.5, step: 0.05 });
+        visuals.addBinding(this, "bloomThreshold", { min: 0, max: 0.5, step: 0.01 });
+        visuals.addBinding(this, "chromaticAberration", { min: 0, max: 0.01, step: 0.001 });
+        visuals.addBinding(this, "fogNear", { min: 0.1, max: 1, step: 0.05 });
+        visuals.addBinding(this, "fogFar", { min: 1, max: 4, step: 0.1 });
         //settings.addBinding(this, "points");
 
         const simulation = settings.addFolder({
@@ -106,6 +150,43 @@ class Conf {
         settings.addBinding(this, "metalness", { min: 0.0, max: 1, step: 0.01 });*/
 
         this.gui = gui;
+    }
+
+    // Presets
+    applyPreset(name) {
+        const presets = {
+            'Calm': {
+                noise: 0.3, speed: 0.5, size: 0.5, density: 0.8,
+                exposure: 0.9, bloomStrength: 0.3, chromaticAberration: 0.002,
+                fogNear: 0.4, fogFar: 2.0
+            },
+            'Storm': {
+                noise: 1.5, speed: 1.4, size: 0.6, density: 1.2,
+                exposure: 1.2, bloomStrength: 0.7, chromaticAberration: 0.006,
+                fogNear: 0.2, fogFar: 1.5
+            },
+            'Dense Cloud': {
+                noise: 0.5, speed: 0.6, size: 0.4, density: 1.5,
+                exposure: 0.8, bloomStrength: 0.4, chromaticAberration: 0.003,
+                fogNear: 0.5, fogFar: 2.5, particles: 8192 * 12
+            },
+            'Light Mist': {
+                noise: 0.8, speed: 0.7, size: 0.8, density: 0.6,
+                exposure: 1.1, bloomStrength: 0.6, chromaticAberration: 0.004,
+                fogNear: 0.3, fogFar: 1.2, particles: 8192 * 4
+            }
+        };
+
+        const preset = presets[name];
+        if (preset) {
+            Object.entries(preset).forEach(([key, value]) => {
+                if (this[key] !== undefined) {
+                    this[key] = value;
+                }
+            });
+            this.updateParams();
+            this.gui.refresh();
+        }
     }
 
     update() {
