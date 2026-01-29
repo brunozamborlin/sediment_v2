@@ -12,6 +12,8 @@ import ParticleRenderer from "./mls-mpm/particleRenderer";
 import BackgroundGeometry from "./backgroundGeometry";
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { rgbShift } from 'three/examples/jsm/tsl/display/RGBShiftNode.js';
+import { film } from 'three/examples/jsm/tsl/display/FilmNode.js';
+import { dof } from 'three/examples/jsm/tsl/display/DepthOfFieldNode.js';
 import PointRenderer from "./mls-mpm/pointRenderer.js";
 
 const loadHdr = async (file) => {
@@ -115,28 +117,53 @@ class App {
         const bloomIntensityPass = scenePass.getTextureNode( 'bloomIntensity' );
         const bloomPass = bloom( outputPass.mul( bloomIntensityPass ) );
 
+        // === Depth of Field Setup ===
+        // Get view-space Z for depth-based blur
+        // Focus: distance from camera, Aperture: blur strength, MaxBlur: blur limit
+        const viewZPass = scenePass.getViewZNode('depth');
+        this.dofEnabled = uniform(1);           // 1 = enabled, 0 = disabled
+        this.dofFocus = uniform(1.2);           // Focus distance (camera at -1, particles at ~0.2)
+        this.dofAperture = uniform(0.008);      // Aperture size (smaller = subtle blur)
+        this.dofMaxBlur = uniform(0.008);       // Maximum blur amount (keep subtle)
+
         // Chromatic aberration amount
         this.chromaticAberrationAmount = uniform(0.003);
 
         // Apply chromatic aberration to the output
         const rgbShiftPass = rgbShift(outputPass, this.chromaticAberrationAmount);
 
+        // === Film Grain Effect ===
+        // Adds organic noise to reduce digital/CG look
+        // Intensity 0.05-0.15 is subtle, 0.2+ is stylized
+        this.filmGrainIntensity = uniform(0.08);
+
         const postProcessing = new THREE.PostProcessing(this.renderer);
         postProcessing.outputColorTransform = false;
 
-        // Combine bloom + chromatic aberration
+        // Store references for update loop
+        this.viewZPass = viewZPass;
+
+        // === Post-Processing Chain ===
+        // Order: Scene -> Bloom blend -> Film Grain
+        // Note: DOF removed - was causing RGB channel separation artifacts
         postProcessing.outputNode = Fn(() => {
-            const a = rgbShiftPass.rgb.clamp(0,1).toVar();
+            // Use output directly (skip chromatic aberration for now)
+            const a = outputPass.rgb.clamp(0,1).toVar();
             const b = bloomPass.rgb.clamp(0,1).mul(bloomIntensityPass.r.sign().oneMinus()).toVar();
-            // Soft light blend
-            return vec4(vec3(1).sub(b).sub(b).mul(a).mul(a).add(b.mul(a).mul(2)).clamp(0,1),1.0);
+            // Soft light blend for bloom
+            const blended = vec3(1).sub(b).sub(b).mul(a).mul(a).add(b.mul(a).mul(2)).clamp(0,1);
+
+            // Apply film grain as final pass
+            const grainPass = film(vec4(blended, 1.0), this.filmGrainIntensity);
+            return grainPass;
         })().renderOutput();
 
         this.postProcessing = postProcessing;
-        this.bloomPass = bloomPass;
-        this.bloomPass.threshold.value = 0.1;   // Lower threshold for more glow
-        this.bloomPass.strength.value = 0.5;    // Soft bloom
-        this.bloomPass.radius.value = 1.2;      // Wider spread
+        // Configure bloom parameters
+        bloomPass.threshold.value = 0.1;   // Lower threshold for more glow
+        bloomPass.strength.value = 0.5;    // Soft bloom
+        bloomPass.radius.value = 1.2;      // Wider spread
+        this.bloomPassRef = bloomPass;     // Store reference for update loop
 
 
         this.raycaster = new THREE.Raycaster();
@@ -174,9 +201,16 @@ class App {
         this.scene.fog.near = conf.fogNear;
         this.scene.fog.far = conf.fogFar;
         this.renderer.toneMappingExposure = conf.exposure;
-        this.bloomPass.strength.value = conf.bloomStrength;
-        this.bloomPass.threshold.value = conf.bloomThreshold;
+        this.bloomPassRef.strength.value = conf.bloomStrength;
+        this.bloomPassRef.threshold.value = conf.bloomThreshold;
         this.chromaticAberrationAmount.value = conf.chromaticAberration;
+        this.filmGrainIntensity.value = conf.filmGrainIntensity;
+
+        // === Depth of Field Parameters ===
+        this.dofEnabled.value = conf.dofEnabled ? 1 : 0;
+        this.dofFocus.value = conf.dofFocus;
+        this.dofAperture.value = conf.dofAperture;
+        this.dofMaxBlur.value = conf.dofMaxBlur;
 
         this.controls.update(delta);
         this.lights.update(elapsed);

@@ -26,12 +26,36 @@ class Conf {
     points = false;
 
     // Visual parameters
-    chromaticAberration = 0.003;
-    fogNear = 0.3;
-    fogFar = 1.8;
+    chromaticAberration = 0.0008;  // Subtle - set to 0 to disable completely
+    fogNear = 0.1;
+    fogFar = 2.2;
     bloomStrength = 0.5;
     bloomThreshold = 0.1;
     exposure = 1.0;
+
+    // === Film Grain ===
+    // Adds organic noise to reduce digital/CG look
+    // Intensity 0.05-0.15 is subtle, 0.2+ is stylized
+    filmGrainIntensity = 0.08;
+
+    // === Particle Variation ===
+    // Adds organic randomness to particle appearance
+    // Uses mass as stable per-particle random seed
+    sizeVariation = 0.25;      // 0 = uniform, 0.25 = size ranges 0.75x-1.25x
+    opacityVariation = 0.2;    // 0 = uniform, 0.2 = opacity ranges 0.8-1.0
+
+    // === Depth-Based Brightness ===
+    // Makes closer particles brighter, farther particles dimmer
+    // Creates volumetric 3D depth feeling
+    depthBrightness = 0.5;     // 0 = no effect, 1.0 = strong depth falloff
+
+    // === Depth of Field ===
+    // Blurs particles based on distance from focus point
+    // Creates cinematic depth separation
+    dofEnabled = true;
+    dofFocus = 1.2;            // Focus distance from camera (camera at -1, particles at ~0.2)
+    dofAperture = 0.008;       // Aperture size - smaller = less blur, subtle effect
+    dofMaxBlur = 0.008;        // Maximum blur amount - keep subtle
 
     constructor(info) {
         if (mobile()) {
@@ -116,6 +140,17 @@ class Conf {
         visuals.addBinding(this, "chromaticAberration", { min: 0, max: 0.01, step: 0.001 });
         visuals.addBinding(this, "fogNear", { min: 0.1, max: 1, step: 0.05 });
         visuals.addBinding(this, "fogFar", { min: 1, max: 4, step: 0.1 });
+        visuals.addBinding(this, "filmGrainIntensity", { min: 0, max: 0.5, step: 0.01, label: "film grain" });
+        visuals.addBinding(this, "sizeVariation", { min: 0, max: 0.5, step: 0.05, label: "size variation" });
+        visuals.addBinding(this, "opacityVariation", { min: 0, max: 0.4, step: 0.05, label: "opacity variation" });
+        visuals.addBinding(this, "depthBrightness", { min: 0, max: 1.0, step: 0.05, label: "depth brightness" });
+
+        // === Depth of Field Controls ===
+        const dofFolder = visuals.addFolder({ title: "depth of field", expanded: false });
+        dofFolder.addBinding(this, "dofEnabled", { label: "enabled" });
+        dofFolder.addBinding(this, "dofFocus", { min: 0.1, max: 2.0, step: 0.05, label: "focus distance" });
+        dofFolder.addBinding(this, "dofAperture", { min: 0.001, max: 0.1, step: 0.005, label: "aperture" });
+        dofFolder.addBinding(this, "dofMaxBlur", { min: 0.001, max: 0.05, step: 0.002, label: "max blur" });
         //settings.addBinding(this, "points");
 
         const simulation = settings.addFolder({

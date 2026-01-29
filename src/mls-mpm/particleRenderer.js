@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import {Fn, attribute, triNoise3D, time, vec3, vec4, float, varying,instanceIndex,mix,normalize,cross,mat3,normalLocal,transformNormalToView,mx_hsvtorgb,mrt,uniform} from "three/tsl";
+import {Fn, attribute, triNoise3D, time, vec3, vec4, float, varying,instanceIndex,mix,normalize,cross,mat3,normalLocal,transformNormalToView,mx_hsvtorgb,mrt,uniform,sin,fract,dot} from "three/tsl";
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {conf} from "../conf";
 
@@ -17,6 +17,22 @@ export const calcLookAtMatrix = /*#__PURE__*/ Fn( ( [ target_immutable ] ) => {
     type: 'mat3',
     inputs: [
         { name: 'direction', type: 'vec3' },
+    ]
+} );
+
+// === Stable Random from Seed ===
+// Generates a pseudo-random value [0,1] from a seed value
+// Uses the common GPU noise pattern: fract(sin(seed * large) * large)
+// This ensures each particle gets a consistent random value across frames
+const stableRandom = /*#__PURE__*/ Fn( ( [ seed_immutable ] ) => {
+    const seed = float( seed_immutable ).toVar();
+    // Classic GPU pseudo-random using sin and fract
+    return fract( sin( seed.mul( 78.233 ) ).mul( 43758.5453 ) );
+} ).setLayout( {
+    name: 'stableRandom',
+    type: 'float',
+    inputs: [
+        { name: 'seed', type: 'float' },
     ]
 } );
 
@@ -120,12 +136,19 @@ class ParticleRenderer {
         this.geometry.instanceCount = this.mlsMpmSim.numParticles;
 
         // Soft, matte material for volumetric look
+        // Transparency enabled for opacity variation effect
         this.material = new THREE.MeshStandardNodeMaterial({
             metalness: 0.1,
             roughness: 0.8,
+            transparent: true,
+            depthWrite: true,  // Keep depth writing for proper sorting
         });
 
+        // === Particle Uniforms ===
         this.uniforms.size = uniform(1);
+        this.uniforms.sizeVariation = uniform(0.25);      // Range: 0 = uniform, 0.25 = 0.75x-1.25x
+        this.uniforms.opacityVariation = uniform(0.2);    // Range: 0 = uniform, 0.2 = 0.8-1.0
+        this.uniforms.depthBrightness = uniform(0.5);     // Range: 0 = no effect, 1.0 = strong falloff
         const vAo = varying(0, "vAo");
         const vNormal = varying(vec3(0), "v_normalView");
 
@@ -133,6 +156,7 @@ class ParticleRenderer {
         this.material.positionNode = Fn(() => {
             const particlePosition = particle.get("position");
             const particleDensity = particle.get("density");
+            const particleMass = particle.get("mass");
 
             // Simple spherical particles (no velocity elongation)
             vNormal.assign(transformNormalToView(normalLocal));
@@ -141,13 +165,23 @@ class ParticleRenderer {
             vAo.assign(particlePosition.z.div(64));
             vAo.assign(vAo.mul(vAo).oneMinus().mul(0.7).add(0.3));
 
-            // Uniform size with slight density variation
+            // === Size Variation ===
+            // Use mass as stable per-particle random seed
+            const seed = particleMass.fract().mul(7.0);
+            const rand = stableRandom(seed);
+            // Size varies from (1 - variation) to (1 + variation)
+            // e.g., variation=0.25 gives range 0.75x to 1.25x
+            const sizeVar = rand.mul(this.uniforms.sizeVariation).mul(2.0).sub(this.uniforms.sizeVariation).add(1.0);
+
+            // Combine with density-based size
             const sizeScale = particleDensity.mul(0.2).add(0.8).clamp(0.6, 1.2);
-            return attribute("position").xyz.mul(this.uniforms.size).mul(sizeScale).add(particlePosition.mul(vec3(1,1,0.4)));
+            return attribute("position").xyz.mul(this.uniforms.size).mul(sizeScale).mul(sizeVar).add(particlePosition.mul(vec3(1,1,0.4)));
         })();
 
         // Custom color: muted reds/pinks + white/gray palette
+        // With depth-based brightness for 3D volumetric effect
         this.material.colorNode = Fn(() => {
+            const particlePosition = particle.get("position");
             const particleVelocity = particle.get("velocity");
             const particleDensity = particle.get("density");
             const particleMass = particle.get("mass");
@@ -168,11 +202,33 @@ class ParticleRenderer {
             // Blend based on particle properties
             const color1 = mix(deepRed, softPink, t);
             const color2 = mix(coolGray, warmWhite, t.mul(0.5).add(0.5));
-            const finalColor = mix(color1, color2, speed.mul(0.3).clamp(0, 0.6));
+            const baseColor = mix(color1, color2, speed.mul(0.3).clamp(0, 0.6));
 
-            return finalColor;
+            // === Depth-Based Brightness ===
+            // Z ranges roughly 0-64 in particle space, normalize to 0-1
+            // Lower Z = closer to camera = brighter
+            const depthNorm = particlePosition.z.div(64.0).clamp(0, 1);
+            // Invert: closer (low Z) = 1, farther (high Z) = 0
+            const closeness = float(1.0).sub(depthNorm);
+            // Apply brightness boost based on closeness
+            // At depthBrightness=0.5: close particles get up to 1.5x brightness, far get 0.5x
+            const brightnessMult = closeness.mul(this.uniforms.depthBrightness).add(float(1.0).sub(this.uniforms.depthBrightness.mul(0.5)));
+
+            return baseColor.mul(brightnessMult);
         })();
         this.material.aoNode = vAo;
+
+        // === Opacity Variation ===
+        // Varies alpha from (1 - variation) to 1.0
+        // e.g., variation=0.2 gives range 0.8 to 1.0
+        this.material.opacityNode = Fn(() => {
+            const particleMass = particle.get("mass");
+            // Use different seed multiplier than size to get different random value
+            const seed = particleMass.fract().mul(13.0);
+            const rand = stableRandom(seed);
+            // Opacity: (1 - variation) to 1.0
+            return rand.mul(this.uniforms.opacityVariation).add(float(1.0).sub(this.uniforms.opacityVariation));
+        })();
 
         //this.material.fragmentNode = vec4(0,0,0,1);
         //this.material.envNode = vec3(0.5);
@@ -192,8 +248,11 @@ class ParticleRenderer {
     }
 
     update() {
-        const { particles, bloom, actualSize } = conf;
+        const { particles, bloom, actualSize, sizeVariation, opacityVariation, depthBrightness } = conf;
         this.uniforms.size.value = actualSize;
+        this.uniforms.sizeVariation.value = sizeVariation;
+        this.uniforms.opacityVariation.value = opacityVariation;
+        this.uniforms.depthBrightness.value = depthBrightness;
         this.geometry.instanceCount = particles;
 
         if (bloom !== this.bloom) {
